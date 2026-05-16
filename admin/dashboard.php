@@ -169,6 +169,7 @@ if (!empty($user['name']) && strpos($user['name'], ' ') !== false) {
             max-width: 960px;
             margin: 0 auto;
             padding: 2.5rem 2rem 5rem;
+            margin-top: -700px;
         }
 
         /* ─── Page header ─── */
@@ -326,7 +327,7 @@ if (!empty($user['name']) && strpos($user['name'], ' ') !== false) {
 <body>
 
 <!-- ─── NAV ─── -->
-<nav>
+<!-- <nav>
     <div class="nav-left">
         <div class="nav-icon">⚡</div>
         <span class="nav-logo">SwiftDrop</span>
@@ -339,7 +340,11 @@ if (!empty($user['name']) && strpos($user['name'], ' ') !== false) {
         </div>
         <a href="logout.php" class="nav-logout">Sign Out</a>
     </div>
-</nav>
+</nav> -->
+
+
+<?php include 'aside.php'; ?>
+
 
 <!-- ─── MAIN ─── -->
 <main>

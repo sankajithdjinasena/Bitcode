@@ -183,6 +183,7 @@ if (!empty($user['name']) && strpos($user['name'], ' ') !== false) {
             max-width: 900px;
             margin: 0 auto;
             padding: 2.5rem 2rem 5rem;
+            margin-top: -711px;
         }
 
         /* ─── Breadcrumb ─── */
@@ -424,6 +425,8 @@ if (!empty($user['name']) && strpos($user['name'], ' ') !== false) {
         <a href="/public/logout.php" class="nav-logout">Sign Out</a>
     </div>
 </nav>
+
+<?php include 'aside.php'; ?>
 
 <!-- ─── MAIN ─── -->
 <main>

@@ -2,99 +2,53 @@
 session_start();
 require_once "../config/database.php";
 
-/* =========================
-   1. ADMIN AUTH CHECK
-========================= */
 if (!isset($_SESSION['user']) || $_SESSION['user']['role'] !== 'admin') {
     header("Location: ../login.php");
     exit;
 }
 
-$error   = "";
-$success = "";
+/* ── Toggle user status ── */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['toggle_id'])) {
+    header('Content-Type: application/json');
 
-/* =========================
-   2. HANDLE FORM SUBMIT
-========================= */
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $id = (int)$_POST['toggle_id'];
 
-    $name   = trim($_POST['name'] ?? '');
-    $date   = trim($_POST['go_live_date'] ?? '');
-    $time   = trim($_POST['go_live_time'] ?? '');
-    $status = in_array($_POST['status'] ?? '', ['locked', 'live', 'ended'])
-                ? $_POST['status']
-                : 'locked';
+    $stmt = $conn->prepare("SELECT status FROM users WHERE id=?");
+    $stmt->execute([$id]);
+    $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if (empty($name) || empty($date) || empty($time)) {
-        $error = "Please fill in all required fields.";
-    } elseif (!isset($_FILES['cover_image']) || $_FILES['cover_image']['error'] !== 0) {
-        $error = "Image upload failed. Please try again.";
-    } elseif ($_FILES['cover_image']['size'] > 2 * 1024 * 1024) {
-        $error = "Image is too large. Maximum size is 2 MB.";
-    } else {
-
-        /* =========================
-           3. VERIFY REAL IMAGE
-        ========================= */
-        $imageInfo = getimagesize($_FILES['cover_image']['tmp_name']);
-
-        if ($imageInfo === false) {
-            $error = "Invalid image file.";
-        } else {
-
-            $allowedMimes = [
-                'image/jpeg' => 'jpg',
-                'image/png'  => 'png',
-                'image/webp' => 'webp',
-            ];
-
-            if (!isset($allowedMimes[$imageInfo['mime']])) {
-                $error = "Only JPG, PNG, and WEBP images are allowed.";
-            } else {
-
-                /* =========================
-                   4. SAFE FILE NAME + MOVE
-                ========================= */
-                $ext       = $allowedMimes[$imageInfo['mime']];
-                $fileName  = bin2hex(random_bytes(16)) . '.' . $ext;
-                $uploadDir = __DIR__ . '/../uploads/events/';
-
-                if (!is_dir($uploadDir)) {
-                    mkdir($uploadDir, 0755, true);
-                }
-
-                $targetPath = $uploadDir . $fileName;
-
-                if (!move_uploaded_file($_FILES['cover_image']['tmp_name'], $targetPath)) {
-                    $error = "Failed to save image. Please try again.";
-                } else {
-
-                    /* =========================
-                       5. BUILD DATETIME + INSERT
-                    ========================= */
-                    $go_live_at = $date . ' ' . $time . ':00';
-
-                    $stmt = $conn->prepare("
-                        INSERT INTO events (name, cover_image, go_live_at, status)
-                        VALUES (?, ?, ?, ?)
-                    ");
-                    $stmt->execute([$name, $fileName, $go_live_at, $status]);
-
-                    header("Location: events.php?created=1");
-                    exit;
-                }
-            }
-        }
+    if (!$user) {
+        echo json_encode(['ok'=>false,'msg'=>'User not found']);
+        exit;
     }
+
+    $newStatus = ($user['status'] === 'active') ? 'deactivated' : 'active';
+
+    $up = $conn->prepare("UPDATE users SET status=? WHERE id=?");
+    $up->execute([$newStatus, $id]);
+
+    echo json_encode([
+        'ok' => true,
+        'msg' => "User " . ($newStatus === 'active' ? "activated" : "deactivated")
+    ]);
+    exit;
 }
+
+/* ── Fetch users ── */
+$stmt = $conn->query("SELECT * FROM users ORDER BY id DESC");
+$users = $stmt->fetchAll(PDO::FETCH_ASSOC);
 ?>
+
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SwiftDrop — Create Event</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <title>Users - SwiftDrop</title>
+
+    <link rel="stylesheet" href="/assets/admin.css">
+
+    <!-- same icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
@@ -679,264 +633,112 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             .status-group { flex-direction: column; }
         }
     </style>
+    <style>
+        .user-table {
+            background: #111118;
+            border: 1px solid rgba(255,255,255,0.07);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .row {
+            display: grid;
+            grid-template-columns: 60px 1fr 1fr 120px 120px;
+            padding: 12px 16px;
+            border-bottom: 1px solid rgba(255,255,255,0.07);
+            align-items: center;
+        }
+
+        .row:hover {
+            background: rgba(255,255,255,0.03);
+        }
+
+        .badge {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+        }
+
+        .active { background: rgba(34,197,94,0.15); color: #86efac; }
+        .inactive { background: rgba(239,68,68,0.15); color: #fca5a5; }
+
+        .btn {
+            padding: 5px 10px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .btn-toggle {
+            background: rgba(255,77,28,0.15);
+            color: #ff8c42;
+        }
+    </style>
 </head>
+
 <body>
+
 <div class="admin-layout">
 
-    <!-- ── Sidebar ── -->
-    <aside class="sidebar">
-        <a href="dashboard.php" class="sidebar-logo">
-            <div class="logo-icon">⚡</div>
-            <span class="logo-name">SwiftDrop</span>
-        </a>
+<?php include "aside.php"; ?>
 
-        <span class="sidebar-label">Main</span>
-        <a href="dashboard.php" class="sidebar-link">
-            <i class="ti ti-layout-dashboard" aria-hidden="true"></i> Dashboard
-        </a>
-        <a href="events.php" class="sidebar-link active">
-            <i class="ti ti-bolt" aria-hidden="true"></i> Events
-        </a>
-        
+<main class="main">
 
-        <span class="sidebar-label">Manage</span>
-        <a href="users.php" class="sidebar-link">
-            <i class="ti ti-users" aria-hidden="true"></i> Users
-        </a>
-        <a href="settings.php" class="sidebar-link">
-            <i class="ti ti-settings" aria-hidden="true"></i> Settings
-        </a>
+    <h2 style="margin-bottom:20px;">Users</h2>
 
-        <div class="sidebar-bottom">
-            <a href="../logout.php" class="sidebar-link">
-                <i class="ti ti-logout" aria-hidden="true"></i> Logout
-            </a>
+    <div class="user-table">
+
+        <div class="row" style="font-weight:bold;">
+            <div>ID</div>
+            <div>Name</div>
+            <div>Email</div>
+            <div>Status</div>
+            <div>Action</div>
         </div>
-    </aside>
 
-    <!-- ── Main ── -->
-    <main class="main">
+        <?php foreach ($users as $u): ?>
+        <div class="row">
+            <div>#<?= $u['id'] ?></div>
+            <div><?= htmlspecialchars($u['name']) ?></div>
+            <div><?= htmlspecialchars($u['email']) ?></div>
 
-        <!-- Page header -->
-        <div class="page-header">
-            <div class="page-header-left">
-                <div class="page-icon">
-                    <i class="ti ti-bolt" style="font-size:22px; color:#fff;" aria-hidden="true"></i>
-                </div>
-                <div>
-                    <div class="page-title">Create Event</div>
-                    <div class="page-sub">Set up a new flash sale drop</div>
-                </div>
+            <div>
+                <span class="badge <?= $u['status'] ?>">
+                    <?= $u['status'] ?>
+                </span>
             </div>
-            <a href="events.php" class="back-link">
-                <i class="ti ti-arrow-left" style="font-size:15px;" aria-hidden="true"></i>
-                Back to events
-            </a>
-        </div>
 
-        <!-- Error alert -->
-        <?php if (!empty($error)): ?>
-            <div class="alert alert-error" role="alert">
-                <i class="ti ti-alert-circle" aria-hidden="true"></i>
-                <?= htmlspecialchars($error) ?>
+            <div>
+                <button class="btn btn-toggle"
+                    onclick="toggleUser(<?= $u['id'] ?>)">
+                    Toggle
+                </button>
             </div>
-        <?php endif; ?>
-
-        <!-- Form card -->
-        <div class="form-card">
-            <form method="POST" enctype="multipart/form-data" id="createForm" novalidate>
-
-                <!-- Event details -->
-                <p class="section-label">Event details</p>
-
-                <div class="field">
-                    <label class="field-label" for="ev-name">Event name <span style="color:var(--accent)">*</span></label>
-                    <div class="input-wrap">
-                        <i class="ti ti-tag" aria-hidden="true"></i>
-                        <input
-                            class="field-input"
-                            type="text"
-                            id="ev-name"
-                            name="name"
-                            placeholder="e.g. Midnight Tech Drop"
-                            maxlength="60"
-                            value="<?= htmlspecialchars($_POST['name'] ?? '') ?>"
-                            oninput="updateCharCount(this, 'name-count', 60)"
-                            required
-                            autofocus
-                        >
-                    </div>
-                    <div class="char-count" id="name-count">0 / 60</div>
-                </div>
-
-                <div class="field-row">
-                    <div>
-                        <label class="field-label" for="ev-date">Go live date <span style="color:var(--accent)">*</span></label>
-                        <div class="input-wrap">
-                            <i class="ti ti-calendar" aria-hidden="true"></i>
-                            <input
-                                class="field-input"
-                                type="date"
-                                id="ev-date"
-                                name="go_live_date"
-                                value="<?= htmlspecialchars($_POST['go_live_date'] ?? date('Y-m-d')) ?>"
-                                required
-                            >
-                        </div>
-                    </div>
-                    <div>
-                        <label class="field-label" for="ev-time">Go live time <span style="color:var(--accent)">*</span></label>
-                        <div class="input-wrap">
-                            <i class="ti ti-clock" aria-hidden="true"></i>
-                            <input
-                                class="field-input"
-                                type="time"
-                                id="ev-time"
-                                name="go_live_time"
-                                value="<?= htmlspecialchars($_POST['go_live_time'] ?? '12:00') ?>"
-                                required
-                            >
-                        </div>
-                    </div>
-                </div>
-
-                <hr class="section-divider">
-
-                <!-- Cover image -->
-                <p class="section-label">Cover image</p>
-
-                <div class="upload-zone" id="dropZone">
-                    <input
-                        type="file"
-                        id="ev-image"
-                        name="cover_image"
-                        accept="image/jpeg,image/png,image/webp"
-                        onchange="handleFile(this)"
-                        required
-                        aria-label="Upload cover image"
-                    >
-                    <i class="ti ti-cloud-upload upload-icon" aria-hidden="true"></i>
-                    <div class="upload-title">Drop image here or click to browse</div>
-                    <div class="upload-hint">JPG, PNG or WEBP · max 2 MB</div>
-                </div>
-
-                <div class="preview-row" id="previewRow">
-                    <img class="preview-thumb" id="previewThumb" src="" alt="Cover preview">
-                    <div class="preview-info">
-                        <div class="preview-name" id="previewName"></div>
-                        <div class="preview-size" id="previewSize"></div>
-                    </div>
-                    <button type="button" class="remove-btn" onclick="removeFile()" aria-label="Remove image">
-                        <i class="ti ti-x" aria-hidden="true"></i>
-                    </button>
-                </div>
-
-                <hr class="section-divider">
-
-                <!-- Status -->
-                <p class="section-label">Initial status</p>
-
-                <div class="status-group">
-                    <?php
-                    $currentStatus = $_POST['status'] ?? 'locked';
-                    $statuses = [
-                        'locked' => ['dot' => 'dot-locked', 'label' => 'Locked'],
-                        'live'   => ['dot' => 'dot-live',   'label' => 'Live'],
-                        'ended'  => ['dot' => 'dot-ended',  'label' => 'Ended'],
-                    ];
-                    foreach ($statuses as $val => $s):
-                        $checked = $currentStatus === $val ? 'checked' : '';
-                    ?>
-                        <div class="status-opt">
-                            <input type="radio" name="status" id="st-<?= $val ?>" value="<?= $val ?>" <?= $checked ?>>
-                            <label class="status-pill" for="st-<?= $val ?>">
-                                <span class="status-dot <?= $s['dot'] ?>"></span>
-                                <?= $s['label'] ?>
-                            </label>
-                        </div>
-                    <?php endforeach; ?>
-                </div>
-
-                <!-- Footer -->
-                <div class="form-footer">
-                    <a href="events.php" class="btn-cancel">Cancel</a>
-                    <button type="submit" class="btn-submit" id="submitBtn">
-                        <span class="spinner" aria-hidden="true"></span>
-                        <i class="ti ti-bolt btn-icon" aria-hidden="true"></i>
-                        <span class="btn-text">Create Event</span>
-                    </button>
-                </div>
-
-            </form>
         </div>
+        <?php endforeach; ?>
 
-    </main>
+    </div>
+
+</main>
 </div>
 
 <script>
-    /* ── Character counter ── */
-    function updateCharCount(input, countId, max) {
-        const len   = input.value.length;
-        const el    = document.getElementById(countId);
-        el.textContent = len + ' / ' + max;
-        el.classList.toggle('warn',   len > max * 0.8);
-        el.classList.toggle('danger', len >= max);
-    }
+async function toggleUser(id) {
+    const fd = new FormData();
+    fd.append('toggle_id', id);
 
-    /* Init counter on page load (for repopulated values) */
-    const nameInput = document.getElementById('ev-name');
-    if (nameInput.value) updateCharCount(nameInput, 'name-count', 60);
-
-    /* ── File preview ── */
-    function handleFile(input) {
-        const file = input.files[0];
-        if (!file) return;
-        const url = URL.createObjectURL(file);
-        document.getElementById('previewThumb').src = url;
-        document.getElementById('previewName').textContent = file.name;
-        const kb = file.size / 1024;
-        document.getElementById('previewSize').textContent =
-            kb < 1024 ? Math.round(kb) + ' KB' : (kb / 1024).toFixed(1) + ' MB';
-        document.getElementById('previewRow').classList.add('visible');
-    }
-
-    function removeFile() {
-        document.getElementById('ev-image').value = '';
-        document.getElementById('previewRow').classList.remove('visible');
-    }
-
-    /* ── Drag-and-drop ── */
-    const dz = document.getElementById('dropZone');
-    dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('drag-over'); });
-    dz.addEventListener('dragleave', ()  => dz.classList.remove('drag-over'));
-    dz.addEventListener('drop', e => {
-        e.preventDefault();
-        dz.classList.remove('drag-over');
-        const dt = new DataTransfer();
-        if (e.dataTransfer.files[0]) {
-            dt.items.add(e.dataTransfer.files[0]);
-            const input = document.getElementById('ev-image');
-            input.files = dt.files;
-            handleFile(input);
-        }
+    const res = await fetch('users.php', {
+        method: 'POST',
+        body: fd
     });
 
-    /* ── Loading state on submit ── */
-    document.getElementById('createForm').addEventListener('submit', function(e) {
-        const name  = document.getElementById('ev-name').value.trim();
-        const date  = document.getElementById('ev-date').value;
-        const time  = document.getElementById('ev-time').value;
-        const file  = document.getElementById('ev-image').files[0];
+    const data = await res.json();
 
-        if (!name || !date || !time || !file) {
-            e.preventDefault();
-            return;
-        }
-
-        const btn = document.getElementById('submitBtn');
-        btn.classList.add('loading');
-        btn.querySelector('.btn-text').textContent = 'Creating…';
-    });
+    alert(data.msg);
+    if (data.ok) location.reload();
+}
 </script>
+
 </body>
 </html>
