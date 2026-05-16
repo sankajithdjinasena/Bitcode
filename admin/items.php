@@ -14,7 +14,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $event_id = $_POST['event_id'];
     $name = $_POST['name'];
     $price = $_POST['price'];
-    $stock = $_POST['stock'];
+    $stock_qty = $_POST['stock'];
 
   $stmt = $conn->prepare("
     INSERT INTO items (event_id, name, price, stock_qty, remaining_stock)
