@@ -542,9 +542,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         required
                     >
                     <button type="button" class="pw-toggle" id="pwToggle" aria-label="Show password">
-                        <svg id="eyeIcon" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-                        </svg>
                     </button>
                 </div>
             </div>

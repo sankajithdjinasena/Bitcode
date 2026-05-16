@@ -337,7 +337,7 @@ if (!empty($user['name']) && strpos($user['name'], ' ') !== false) {
             <div class="nav-avatar"><?= htmlspecialchars($initials) ?></div>
             <span class="nav-username"><?= htmlspecialchars($user['name'] ?? $user['username']) ?></span>
         </div>
-        <a href="/public/logout.php" class="nav-logout">Sign Out</a>
+        <a href="logout.php" class="nav-logout">Sign Out</a>
     </div>
 </nav>
 

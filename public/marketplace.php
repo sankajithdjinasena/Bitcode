@@ -452,6 +452,47 @@ if (strpos($user['name'] ?? '', ' ') !== false) {
             main { padding: 1.5rem 1rem 4rem; }
             .nav-logo-name { display: none; }
         }
+
+        .nav-right {
+            position: relative;
+        }
+
+        .user-menu {
+            position: absolute;
+            top: 52px;
+            right: 95px;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            min-width: 180px;
+            overflow: hidden;
+
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(8px);
+
+            transition: all 0.2s ease;
+            z-index: 200;
+        }
+
+        .user-menu.show {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0);
+        }
+
+        .user-menu a {
+            display: block;
+            padding: 12px 16px;
+            text-decoration: none;
+            color: var(--text);
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+
+        .user-menu a:hover {
+            background: rgba(255,255,255,0.05);
+        }
     </style>
 </head>
 <body>
@@ -463,12 +504,21 @@ if (strpos($user['name'] ?? '', ' ') !== false) {
         <span class="nav-logo-name">SwiftDrop</span>
     </a>
     <div class="nav-right">
-        <div class="nav-user">
-            <div class="nav-avatar"><?= htmlspecialchars($initials) ?></div>
-            <span class="nav-username"><?= htmlspecialchars($user['name'] ?? $user['username']) ?></span>
-        </div>
-        <a href="logout.php" class="nav-logout">Sign Out</a>
+
+    <div class="nav-user" onclick="toggleUserMenu()">
+        <div class="nav-avatar"><?= htmlspecialchars($initials) ?></div>
+        <span class="nav-username">
+            <?= htmlspecialchars($user['name'] ?? $user['username']) ?>
+        </span>
     </div>
+
+    <div class="user-menu" id="userMenu">
+        <a href="change_password.php">Change Password</a>
+    </div>
+
+    <a href="logout.php" class="nav-logout">Sign Out</a>
+
+</div>
 </nav>
 
 <!-- ─── MAIN ─── -->
@@ -651,6 +701,21 @@ function showToast(msg, type = 'success') {
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { t.className = ''; }, 3500);
 }
+
+/* ─── User menu ─── */
+function toggleUserMenu() {
+    document.getElementById('userMenu').classList.toggle('show');
+}
+
+/* Close when clicking outside */
+document.addEventListener('click', function(e) {
+    const menu = document.getElementById('userMenu');
+    const user = document.querySelector('.nav-user');
+
+    if (!user.contains(e.target) && !menu.contains(e.target)) {
+        menu.classList.remove('show');
+    }
+});
 </script>
 </body>
 </html>
