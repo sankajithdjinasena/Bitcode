@@ -14,15 +14,19 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 
     if ($user && password_verify($password, $user['password'])) {
 
-        if ($user['status'] == 'deactivated') {
-            die("Account Deactivated");
-        }
+            if ($user['status'] == 'deactivated') {
+                die("Account Deactivated");
+            }
 
-        $_SESSION['user'] = $user;
+            session_regenerate_id(true);
 
-        header("Location: marketplace.php");
-        exit;
-    } else {
+            unset($user['password']);
+
+            $_SESSION['user'] = $user;
+
+            header("Location: marketplace.php");
+            exit;
+        } else {
         echo "Invalid Credentials";
     }
 }
