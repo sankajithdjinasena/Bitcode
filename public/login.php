@@ -14,21 +14,28 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 
     if ($user && password_verify($password, $user['password'])) {
 
-            if ($user['status'] == 'deactivated') {
-                die("Account Deactivated");
-            }
-
-            session_regenerate_id(true);
-
-            unset($user['password']);
-
-            $_SESSION['user'] = $user;
-
-            header("Location: marketplace.php");
-            exit;
-        } else {
-        echo "Invalid Credentials";
+    if ($user['status'] == 'deactivated') {
+        die("Account Deactivated");
     }
+
+    session_regenerate_id(true);
+
+    unset($user['password']);
+
+    $_SESSION['user'] = $user;
+
+    // 👉 ROLE CHECK HERE
+    if ($user['role'] === 'admin') {
+        header("Location: ../admin/dashboard.php");
+        exit;
+    } else {
+        header("Location: marketplace.php");
+        exit;
+    }
+
+} else {
+    echo "Invalid Credentials";
+}
 }
 ?>
 
