@@ -15,6 +15,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         $stmt->execute([$email]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
+<<<<<<< HEAD
         if ($user && password_verify($password, $user['password'])) {
             if ($user['status'] === 'deactivated') {
                 $error = "This account has been deactivated.";
@@ -28,7 +29,37 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         } else {
             $error = "Invalid email or password.";
         }
+=======
+    $stmt = $conn->prepare("SELECT * FROM users WHERE email = ?");
+    $stmt->execute([$email]);
+
+    $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if ($user && password_verify($password, $user['password'])) {
+
+    if ($user['status'] == 'deactivated') {
+        die("Account Deactivated");
+>>>>>>> 50a4c18e20ebd3d76f27139105a6f8e6257a7a34
     }
+
+    session_regenerate_id(true);
+
+    unset($user['password']);
+
+    $_SESSION['user'] = $user;
+
+    // 👉 ROLE CHECK HERE
+    if ($user['role'] === 'admin') {
+        header("Location: ../admin/dashboard.php");
+        exit;
+    } else {
+        header("Location: marketplace.php");
+        exit;
+    }
+
+} else {
+    echo "Invalid Credentials";
+}
 }
 ?>
 <!DOCTYPE html>
