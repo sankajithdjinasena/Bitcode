@@ -4,19 +4,25 @@ require_once "../config/database.php";
 
 $error = "";
 
-if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    $email    = trim($_POST['email'] ?? '');
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+
+    $email = trim($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
 
     // Validate input
     if (empty($email) || empty($password)) {
         $error = "Please fill in all fields.";
     } else {
+<<<<<<< HEAD
         // Get user by email
+=======
+
+>>>>>>> ce4c3b7513849ecdecf1f352c74c388c323cacec
         $stmt = $conn->prepare("SELECT * FROM users WHERE email = ?");
         $stmt->execute([$email]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
+<<<<<<< HEAD
         // Verify password
         if ($user && password_verify($password, $user['password'])) {
 
@@ -25,6 +31,14 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 $error = "This account has been deactivated.";
             } else {
                 // Secure session
+=======
+        if ($user && password_verify($password, $user['password'])) {
+
+            if ($user['status'] === 'deactivated') {
+                $error = "This account has been deactivated.";
+            } else {
+
+>>>>>>> ce4c3b7513849ecdecf1f352c74c388c323cacec
                 session_regenerate_id(true);
 
                 // Remove password before storing in session
@@ -33,7 +47,11 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 // Store user in session
                 $_SESSION['user'] = $user;
 
+<<<<<<< HEAD
                 // Redirect based on role
+=======
+                // ROLE CHECK
+>>>>>>> ce4c3b7513849ecdecf1f352c74c388c323cacec
                 if ($user['role'] === 'admin') {
                     header("Location: ../admin/dashboard.php");
                     exit;
@@ -42,6 +60,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                     exit;
                 }
             }
+
         } else {
             $error = "Invalid email or password.";
         }
