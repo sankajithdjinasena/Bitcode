@@ -1,12 +1,9 @@
 <?php
 /**
- * payment.php
- * -----------
- * Converts all cart items for the logged-in user into confirmed orders,
- * records a payment, and clears the cart.
- *
- * Called via AJAX POST from cart.php.
- * Returns JSON { success, message, reference }.
+ * payment.php (FIXED VERSION)
+ * ---------------------------
+ * Atomically converts cart items into orders,
+ * reduces stock safely, records payments, and clears cart.
  */
 
 require_once "../app/middleware/auth.php";
@@ -15,7 +12,7 @@ require_once "../config/database.php";
 header('Content-Type: application/json');
 
 $userId = (int) $_SESSION['user']['id'];
-$method = $_POST['method'] ?? 'card';
+$method  = $_POST['method'] ?? 'card';
 
 $allowedMethods = ['card', 'bank_transfer', 'cash_on_delivery'];
 if (!in_array($method, $allowedMethods)) {
@@ -25,11 +22,13 @@ if (!in_array($method, $allowedMethods)) {
 try {
     $conn->beginTransaction();
 
-    // Fetch all cart items for this user (lock rows)
+    /**
+     * 1. Lock and fetch cart items
+     */
     $cartStmt = $conn->prepare("
-        SELECT c.id AS cart_id, c.event_id, c.item_id, c.price
-        FROM   cart c
-        WHERE  c.user_id = ?
+        SELECT id AS cart_id, event_id, item_id, price
+        FROM cart
+        WHERE user_id = ?
         FOR UPDATE
     ");
     $cartStmt->execute([$userId]);
@@ -41,65 +40,151 @@ try {
         exit;
     }
 
-    $totalAmount = 0;
     $orderIds    = [];
+    $totalAmount  = 0;
 
+    /**
+     * 2. Process each cart item safely
+     */
     foreach ($cartItems as $ci) {
-        // Double-check: user must not already have a confirmed order for this event
+
+        $itemId  = (int) $ci['item_id'];
+        $eventId = (int) $ci['event_id'];
+        $price   = (float) $ci['price'];
+
+        /**
+         * Lock item row (prevents overselling)
+         */
+        $itemStmt = $conn->prepare("
+            SELECT remaining_stock
+            FROM items
+            WHERE id = ?
+            FOR UPDATE
+        ");
+        $itemStmt->execute([$itemId]);
+        $item = $itemStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$item || $item['remaining_stock'] <= 0) {
+            $conn->rollBack();
+            echo json_encode([
+                'success' => false,
+                'message' => "Item $itemId is out of stock."
+            ]);
+            exit;
+        }
+
+        /**
+         * Reduce stock
+         */
+        $updateStock = $conn->prepare("
+            UPDATE items
+            SET remaining_stock = remaining_stock - 1
+            WHERE id = ? AND remaining_stock > 0
+        ");
+        $updateStock->execute([$itemId]);
+
+        /**
+         * Prevent duplicate confirmed orders
+         */
         $dupCheck = $conn->prepare("
-            SELECT COUNT(*) FROM orders
+            SELECT COUNT(*) 
+            FROM orders
             WHERE user_id = ? AND event_id = ? AND status = 'confirmed'
         ");
-        $dupCheck->execute([$userId, $ci['event_id']]);
+        $dupCheck->execute([$userId, $eventId]);
+
         if ((int)$dupCheck->fetchColumn() > 0) {
-            // Already have an order — skip (shouldn't normally happen if purchase.php ran)
             continue;
         }
 
-        // Insert order
+        /**
+         * Create order
+         */
         $insOrder = $conn->prepare("
             INSERT INTO orders (user_id, event_id, item_id, status, price)
             VALUES (?, ?, ?, 'confirmed', ?)
         ");
-        $insOrder->execute([$userId, $ci['event_id'], $ci['item_id'], $ci['price']]);
-        $orderId    = (int) $conn->lastInsertId();
+        $insOrder->execute([$userId, $eventId, $itemId, $price]);
+
+        $orderId = (int) $conn->lastInsertId();
         $orderIds[] = $orderId;
-        $totalAmount += (float) $ci['price'];
+
+        $totalAmount += $price;
     }
 
     if (empty($orderIds)) {
         $conn->rollBack();
-        echo json_encode(['success' => false, 'message' => 'All cart items are already ordered.']);
+        echo json_encode([
+            'success' => false,
+            'message' => 'All cart items are already ordered.'
+        ]);
         exit;
     }
 
-    // Generate a human-readable transaction reference
+    /**
+     * 3. Generate transaction reference
+     */
     $txRef = 'SWD-' . strtoupper(substr(md5(uniqid($userId, true)), 0, 8));
 
-    // Record payment for each order
+    /**
+     * 4. Payment status
+     */
+    $payStatus = ($method === 'bank_transfer') ? 'pending' : 'paid';
+
+    /**
+     * 5. Insert payment per order (correct per-order amount)
+     */
     foreach ($orderIds as $oid) {
+        $orderPrice = 0;
+
+        // get order price (safe, accurate)
+        $priceStmt = $conn->prepare("SELECT price FROM orders WHERE id = ?");
+        $priceStmt->execute([$oid]);
+        $orderPrice = (float) $priceStmt->fetchColumn();
+
         $insPay = $conn->prepare("
-            INSERT INTO payments (order_id, user_id, amount, method, status, transaction_ref, paid_at)
-            VALUES (?, ?, ?, ?, 'paid', ?, NOW())
+            INSERT INTO payments 
+            (order_id, user_id, amount, method, status, transaction_ref, paid_at)
+            VALUES (?, ?, ?, ?, ?, ?, NOW())
         ");
-        // For bank transfer, mark as 'pending' until verified
-        $payStatus = ($method === 'bank_transfer') ? 'pending' : 'paid';
-        $insPay->execute([$oid, $userId, $totalAmount, $method, $txRef]);
+
+        $insPay->execute([
+            $oid,
+            $userId,
+            $orderPrice,
+            $method,
+            $payStatus,
+            $txRef
+        ]);
     }
 
-    // Clear the cart
-    $conn->prepare("DELETE FROM cart WHERE user_id = ?")->execute([$userId]);
+    /**
+     * 6. Clear cart
+     */
+    $clearCart = $conn->prepare("DELETE FROM cart WHERE user_id = ?");
+    $clearCart->execute([$userId]);
 
+    /**
+     * 7. Commit transaction
+     */
     $conn->commit();
 
     echo json_encode([
         'success'   => true,
         'message'   => 'Payment confirmed!',
-        'reference' => $txRef,
+        'reference' => $txRef
     ]);
 
 } catch (PDOException $e) {
-    $conn->rollBack();
-    // Log: $e->getMessage()
-    echo json_encode(['success' => false, 'message' => 'Payment processing failed. Please try again.']);
+    if ($conn->inTransaction()) {
+        $conn->rollBack();
+    }
+
+    // Log real error in production
+    // error_log($e->getMessage());
+
+    echo json_encode([
+        'success' => false,
+        'message' => 'Payment processing failed. Please try again.'
+    ]);
 }

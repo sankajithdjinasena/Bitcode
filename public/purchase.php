@@ -1,151 +1,308 @@
 <?php
-/**
- * purchase.php
- * ------------
- * Atomically reserves one item for the logged-in user and adds it to their cart.
- *
- * Concurrency strategy (handles 1 000+ simultaneous requests):
- *   1. Begin an InnoDB transaction.
- *   2. SELECT … FOR UPDATE on the item row — this row-level lock means only
- *      ONE PHP process can proceed past this point per item at a time; the rest
- *      queue behind the lock (no lost-update / oversell).
- *   3. Re-check remaining_stock inside the lock.
- *   4. Check the cart+orders tables to enforce "one item per event per user".
- *   5. Decrement stock and insert cart row atomically then COMMIT.
- *
- * Because the unique key `uq_cart_user_event` is on the cart table, even if
- * two requests race past step 4 simultaneously, only one INSERT will succeed —
- * the second gets a duplicate-key error that we catch and return gracefully.
- *
- * NGINX note: point multiple PHP-FPM workers at this same file; the InnoDB
- * row lock ensures correctness regardless of how many workers run in parallel.
- */
 
 require_once "../app/middleware/auth.php";
 require_once "../config/database.php";
 
 header('Content-Type: application/json');
 
-// ── Input validation ──────────────────────────────────────────────────────────
+/*
+|--------------------------------------------------------------------------
+| RATE LIMITING
+|--------------------------------------------------------------------------
+| Prevents spam / bot hammering
+*/
+
+$ip = $_SERVER['REMOTE_ADDR'];
+
+$rateFile = sys_get_temp_dir() . "/rate_" . md5($ip);
+
+$requests = [];
+
+if (file_exists($rateFile)) {
+    $requests = json_decode(file_get_contents($rateFile), true);
+}
+
+$now = time();
+
+$requests = array_filter($requests, function ($t) use ($now) {
+    return ($now - $t) < 60;
+});
+
+if (count($requests) >= 20) {
+
+    echo json_encode([
+        'success' => false,
+        'message' => 'Too many requests'
+    ]);
+
+    exit;
+}
+
+$requests[] = $now;
+
+file_put_contents($rateFile, json_encode($requests));
+
+/*
+|--------------------------------------------------------------------------
+| VALIDATE INPUT
+|--------------------------------------------------------------------------
+*/
+
 $itemId = filter_input(INPUT_POST, 'item_id', FILTER_VALIDATE_INT);
+
 if (!$itemId) {
-    echo json_encode(['success' => false, 'message' => 'Invalid item.']);
+
+    echo json_encode([
+        'success' => false,
+        'message' => 'Invalid item'
+    ]);
+
     exit;
 }
 
 $userId = (int) $_SESSION['user']['id'];
 
 try {
-    // ── Begin transaction ─────────────────────────────────────────────────────
-    $conn->beginTransaction();
 
-    // ── 1. Lock the item row & fetch current state ────────────────────────────
-    $stmt = $conn->prepare("
-        SELECT i.id, i.name, i.price, i.remaining_stock, i.event_id
-        FROM   items i
-        WHERE  i.id = ?
-        FOR UPDATE
+    /*
+    |--------------------------------------------------------------------------
+    | CHECK EVENT STATUS
+    |--------------------------------------------------------------------------
+    */
+
+    $eventStmt = $conn->prepare("
+        SELECT
+            e.status,
+            e.go_live_at
+        FROM events e
+        JOIN items i ON i.event_id = e.id
+        WHERE i.id = ?
     ");
-    $stmt->execute([$itemId]);
-    $item = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    if (!$item) {
-        $conn->rollBack();
-        echo json_encode(['success' => false, 'message' => 'Item not found.']);
+    $eventStmt->execute([$itemId]);
+
+    $event = $eventStmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$event) {
+
+        echo json_encode([
+            'success' => false,
+            'message' => 'Event not found'
+        ]);
+
         exit;
     }
-
-    // ── 2. Check event is live ────────────────────────────────────────────────
-    $evStmt = $conn->prepare("
-        SELECT id, name, status, go_live_at
-        FROM   events
-        WHERE  id = ?
-    ");
-    $evStmt->execute([$item['event_id']]);
-    $event = $evStmt->fetch(PDO::FETCH_ASSOC);
 
     date_default_timezone_set('Asia/Colombo');
-    $goLive = new DateTime($event['go_live_at'], new DateTimeZone('Asia/Colombo'));
-    $now    = new DateTime('now',               new DateTimeZone('Asia/Colombo'));
 
-    if ($goLive > $now || $event['status'] === 'ended') {
-        $conn->rollBack();
-        echo json_encode(['success' => false, 'message' => 'This event is not live yet.']);
+    if (
+        strtotime($event['go_live_at']) > time()
+        || $event['status'] !== 'live'
+    ) {
+
+        echo json_encode([
+            'success' => false,
+            'message' => 'Event not live'
+        ]);
+
         exit;
     }
 
-    // ── 3. Check stock (inside lock) ──────────────────────────────────────────
-    if ((int)$item['remaining_stock'] <= 0) {
-        $conn->rollBack();
-        echo json_encode(['success' => false, 'message' => 'Sorry, this item just sold out!']);
-        exit;
-    }
+    /*
+    |--------------------------------------------------------------------------
+    | CHECK DUPLICATE CART
+    |--------------------------------------------------------------------------
+    */
 
-    // ── 4. Enforce one-item-per-event rule ────────────────────────────────────
-    //    Check both cart and confirmed orders
     $dupStmt = $conn->prepare("
-        SELECT COUNT(*) FROM cart
-        WHERE user_id = ? AND event_id = ?
+        SELECT COUNT(*)
+        FROM cart
+        WHERE user_id = ?
+        AND event_id = (
+            SELECT event_id
+            FROM items
+            WHERE id = ?
+        )
     ");
-    $dupStmt->execute([$userId, $item['event_id']]);
-    if ((int)$dupStmt->fetchColumn() > 0) {
-        $conn->rollBack();
-        echo json_encode(['success' => false, 'message' => 'You already have an item from this event in your cart.']);
+
+    $dupStmt->execute([$userId, $itemId]);
+
+    if ($dupStmt->fetchColumn() > 0) {
+
+        echo json_encode([
+            'success' => false,
+            'message' => 'Already in cart'
+        ]);
+
         exit;
     }
 
-    $ordStmt = $conn->prepare("
-        SELECT COUNT(*) FROM orders
-        WHERE user_id = ? AND event_id = ? AND status = 'confirmed'
+    /*
+    |--------------------------------------------------------------------------
+    | CHECK ALREADY PURCHASED
+    |--------------------------------------------------------------------------
+    */
+
+    $orderStmt = $conn->prepare("
+        SELECT COUNT(*)
+        FROM orders
+        WHERE user_id = ?
+        AND event_id = (
+            SELECT event_id
+            FROM items
+            WHERE id = ?
+        )
+        AND status = 'confirmed'
     ");
-    $ordStmt->execute([$userId, $item['event_id']]);
-    if ((int)$ordStmt->fetchColumn() > 0) {
-        $conn->rollBack();
-        echo json_encode(['success' => false, 'message' => 'You have already purchased an item from this event.']);
+
+    $orderStmt->execute([$userId, $itemId]);
+
+    if ($orderStmt->fetchColumn() > 0) {
+
+        echo json_encode([
+            'success' => false,
+            'message' => 'Already purchased'
+        ]);
+
         exit;
     }
 
-    // ── 5. Decrement stock ────────────────────────────────────────────────────
-    $decStmt = $conn->prepare("
+    /*
+    |--------------------------------------------------------------------------
+    | BEGIN TRANSACTION
+    |--------------------------------------------------------------------------
+    */
+
+    $conn->beginTransaction();
+
+    /*
+    |--------------------------------------------------------------------------
+    | LOCK ITEM ROW
+    |--------------------------------------------------------------------------
+    */
+
+    $stmt = $conn->prepare("
+        SELECT
+            id,
+            remaining_stock,
+            event_id,
+            price
+        FROM items
+        WHERE id = ?
+        FOR UPDATE
+    ");
+
+    $stmt->execute([$itemId]);
+
+    $item = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$item || (int)$item['remaining_stock'] <= 0) {
+
+        $conn->rollBack();
+
+        echo json_encode([
+            'success' => false,
+            'message' => 'Sold out'
+        ]);
+
+        exit;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | ATOMIC STOCK DEDUCTION
+    |--------------------------------------------------------------------------
+    */
+/*
+    $updateStmt = $conn->prepare("
         UPDATE items
-        SET    remaining_stock = remaining_stock - 1
-        WHERE  id = ? AND remaining_stock > 0
+        SET remaining_stock = remaining_stock - 1
+        WHERE id = ?
+        AND remaining_stock > 0
     ");
-    $decStmt->execute([$itemId]);
 
-    if ($decStmt->rowCount() === 0) {
-        // Stock hit 0 between our check and update (edge-case safety net)
+    $updateStmt->execute([$itemId]);
+
+    if ($updateStmt->rowCount() === 0) {
+
         $conn->rollBack();
-        echo json_encode(['success' => false, 'message' => 'Sorry, this item just sold out!']);
+
+        echo json_encode([
+            'success' => false,
+            'message' => 'Sold out'
+        ]);
+
         exit;
     }
+*/
+    /*
+    |--------------------------------------------------------------------------
+    | INSERT INTO CART
+    |--------------------------------------------------------------------------
+    */
 
-    // ── 6. Insert into cart ───────────────────────────────────────────────────
-    //    The UNIQUE KEY `uq_cart_user_event` acts as a last-line-of-defence
-    //    against race conditions: a duplicate INSERT will throw an exception.
     $cartStmt = $conn->prepare("
-        INSERT INTO cart (user_id, event_id, item_id, price)
+        INSERT INTO cart
+        (
+            user_id,
+            event_id,
+            item_id,
+            price
+        )
         VALUES (?, ?, ?, ?)
     ");
-    $cartStmt->execute([$userId, $item['event_id'], $itemId, $item['price']]);
 
-    // ── 7. Commit ─────────────────────────────────────────────────────────────
+    $cartStmt->execute([
+        $userId,
+        $item['event_id'],
+        $itemId,
+        $item['price']
+    ]);
+
+    /*
+    |--------------------------------------------------------------------------
+    | COMMIT TRANSACTION
+    |--------------------------------------------------------------------------
+    */
+
     $conn->commit();
 
     echo json_encode([
-        'success'  => true,
-        'message'  => 'Added to cart! Redirecting…',
-        'redirect' => 'cart.php',
+        'success' => true,
+        'message' => 'Added to cart successfully',
+        'redirect' => 'cart.php'
     ]);
 
 } catch (PDOException $e) {
-    $conn->rollBack();
 
-    // Duplicate-key = another process beat this user to the same event slot
-    if ($e->getCode() === '23000') {
-        echo json_encode(['success' => false, 'message' => 'You already have an item from this event in your cart.']);
-    } else {
-        // Log $e->getMessage() to server log in production
-        echo json_encode(['success' => false, 'message' => 'A server error occurred. Please try again.']);
+    if ($conn->inTransaction()) {
+        $conn->rollBack();
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | DUPLICATE KEY ERROR
+    |--------------------------------------------------------------------------
+    */
+
+    if ($e->getCode() === '23000') {
+
+        echo json_encode([
+            'success' => false,
+            'message' => 'Already in cart'
+        ]);
+
+        exit;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | SERVER ERROR
+    |--------------------------------------------------------------------------
+    */
+
+    echo json_encode([
+        'success' => false,
+        'message' => 'Server busy. Please try again.'
+    ]);
 }
