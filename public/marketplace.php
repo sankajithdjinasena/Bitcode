@@ -2,19 +2,6 @@
 require_once "../app/middleware/auth.php";
 require_once "../config/database.php";
 
-// ITEMS ALREADY BOUGHT (orders table)
-$boughtItems = [];
-
-$boughtStmt = $conn->prepare("
-    SELECT item_id
-    FROM orders
-    WHERE user_id = ? AND status = 'confirmed'
-");
-$boughtStmt->execute([$userId]);
-
-foreach ($boughtStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-    $boughtItems[$row['item_id']] = true;
-}
 
 
 // Fetch all events with their items
@@ -69,6 +56,19 @@ if (strpos($user['name'] ?? '', ' ') !== false) {
     $initials = strtoupper(substr($parts[0], 0, 1) . substr(end($parts), 0, 1));
 }
 
+// ITEMS ALREADY BOUGHT (orders table)
+$boughtItems = [];
+
+$boughtStmt = $conn->prepare("
+    SELECT item_id
+    FROM orders
+    WHERE user_id = ? AND status = 'confirmed'
+");
+$boughtStmt->execute([$userId]);
+
+foreach ($boughtStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+    $boughtItems[$row['item_id']] = true;
+}
 // Cart count badge
 $cartCountStmt = $conn->prepare("SELECT COUNT(*) FROM cart WHERE user_id = ?");
 $cartCountStmt->execute([$userId]);
